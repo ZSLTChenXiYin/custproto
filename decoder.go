@@ -22,7 +22,7 @@ func NewStreamDecoder(r io.Reader, order binary.ByteOrder) *StreamDecoder {
 }
 
 // Decode 从流中解码数据到结构体
-func (d *StreamDecoder) Decode(v interface{}) error {
+func (d *StreamDecoder) Decode(v any) error {
 	val := reflect.ValueOf(v)
 	if val.Kind() != reflect.Ptr || val.IsNil() {
 		return fmt.Errorf("decoder: v must be a non-nil pointer")
@@ -198,7 +198,7 @@ func NewBufferDecoder(data []byte, order binary.ByteOrder) *BufferDecoder {
 }
 
 // Decode 从缓冲区解码数据到结构体
-func (b *BufferDecoder) Decode(v interface{}) error {
+func (b *BufferDecoder) Decode(v any) error {
 	val := reflect.ValueOf(v)
 	if val.Kind() != reflect.Ptr || val.IsNil() {
 		return fmt.Errorf("decoder: v must be a non-nil pointer")

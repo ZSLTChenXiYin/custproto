@@ -24,7 +24,7 @@ func NewEncoder(w io.Writer, order binary.ByteOrder) *Encoder {
 }
 
 // Encode 将结构体编码为二进制数据
-func (e *Encoder) Encode(v interface{}) error {
+func (e *Encoder) Encode(v any) error {
 	e.buffer = bytes.NewBuffer(nil)
 
 	val := reflect.ValueOf(v)
