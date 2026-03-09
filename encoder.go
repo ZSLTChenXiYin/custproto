@@ -24,7 +24,7 @@ func NewEncoder(w io.Writer, order binary.ByteOrder) *Encoder {
 }
 
 // Encode 将结构体编码为二进制数据
-func (e *Encoder) Encode(v any) error {
+func (e *Encoder) Encode(v interface{}) error {
 	e.buffer = bytes.NewBuffer(nil)
 
 	val := reflect.ValueOf(v)
@@ -56,13 +56,22 @@ func (e *Encoder) Bytes() []byte {
 	return e.buffer.Bytes()
 }
 
-// encodeStruct 递归编码结构体
+// encodeStruct 递归编码结构体（支持内嵌结构体）
 func (e *Encoder) encodeStruct(val reflect.Value) error {
 	typ := val.Type()
 
 	for i := 0; i < val.NumField(); i++ {
 		field := val.Field(i)
 		fieldType := typ.Field(i)
+
+		// 检查是否是内嵌结构体（匿名嵌入）
+		if fieldType.Anonymous {
+			// 递归编码内嵌结构体
+			if err := e.encodeStruct(field); err != nil {
+				return fmt.Errorf("encode embedded struct %s failed: %v", fieldType.Name, err)
+			}
+			continue
+		}
 
 		tag := fieldType.Tag.Get("custproto")
 		if tag != "" {
@@ -78,7 +87,6 @@ func (e *Encoder) encodeStruct(val reflect.Value) error {
 				}
 				continue
 			}
-			// required标志在编码时不影响，只影响解码
 		}
 
 		// 写入普通字段

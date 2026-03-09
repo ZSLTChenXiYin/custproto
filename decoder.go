@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"strings"
 )
 
 // StreamDecoder 流式解码器
@@ -22,7 +23,7 @@ func NewStreamDecoder(r io.Reader, order binary.ByteOrder) *StreamDecoder {
 }
 
 // Decode 从流中解码数据到结构体
-func (d *StreamDecoder) Decode(v any) error {
+func (d *StreamDecoder) Decode(v interface{}) error {
 	val := reflect.ValueOf(v)
 	if val.Kind() != reflect.Ptr || val.IsNil() {
 		return fmt.Errorf("decoder: v must be a non-nil pointer")
@@ -36,35 +37,60 @@ func (d *StreamDecoder) Decode(v any) error {
 	// 创建字段值映射，用于引用前面的字段
 	fieldMap := make(map[string]reflect.Value)
 
-	return d.decodeStruct(val, fieldMap)
+	return d.decodeStruct(val, fieldMap, "")
 }
 
-// decodeStruct 递归解码结构体
-func (d *StreamDecoder) decodeStruct(val reflect.Value, fieldMap map[string]reflect.Value) error {
+// decodeStruct 递归解码结构体（支持内嵌结构体）
+func (d *StreamDecoder) decodeStruct(val reflect.Value, fieldMap map[string]reflect.Value, prefix string) error {
 	typ := val.Type()
 
 	for i := 0; i < val.NumField(); i++ {
 		field := val.Field(i)
 		fieldType := typ.Field(i)
 
-		// 将字段名和值存入映射，供后续字段引用
-		fieldMap[fieldType.Name] = field
+		// 检查是否是内嵌结构体（匿名嵌入）
+		if fieldType.Anonymous {
+			// 递归解码内嵌结构体
+			if err := d.decodeStruct(field, fieldMap, prefix+fieldType.Name+"."); err != nil {
+				return fmt.Errorf("decode embedded struct %s failed: %v", fieldType.Name, err)
+			}
+			continue
+		}
+
+		// 获取完整的字段名（带前缀）
+		fullFieldName := prefix + fieldType.Name
+		fieldMap[fullFieldName] = field
 
 		// 处理标签
 		tag := fieldType.Tag.Get("custproto")
 		if tag != "" {
 			tagInfo, err := parseTag(tag)
 			if err != nil {
-				return fmt.Errorf("parse tag failed for field %s: %v", fieldType.Name, err)
+				return fmt.Errorf("parse tag failed for field %s: %v", fullFieldName, err)
 			}
 
 			// 如果指定了字段名，表示这是一个可变长度字段
 			if tagInfo.FieldName != "" {
-				// 从之前解码的字段中获取长度
-				lengthField, ok := fieldMap[tagInfo.FieldName]
-				if !ok {
+				// 需要在fieldMap中查找引用的字段（可能也在内嵌结构体中）
+				var lengthField reflect.Value
+				var found bool
+
+				// 尝试在fieldMap中查找
+				lengthField, found = fieldMap[tagInfo.FieldName]
+				if !found {
+					// 如果没找到，尝试添加前缀再次查找（处理引用内嵌结构体中的字段）
+					for key, val := range fieldMap {
+						if strings.HasSuffix(key, tagInfo.FieldName) {
+							lengthField = val
+							found = true
+							break
+						}
+					}
+				}
+
+				if !found {
 					return fmt.Errorf("field %s references unknown field %s",
-						fieldType.Name, tagInfo.FieldName)
+						fullFieldName, tagInfo.FieldName)
 				}
 
 				// 获取长度值
@@ -81,7 +107,7 @@ func (d *StreamDecoder) decodeStruct(val reflect.Value, fieldMap map[string]refl
 
 				// 根据长度读取数据
 				if err := d.readField(field, int(length), tagInfo.Required); err != nil {
-					return fmt.Errorf("read field %s failed: %v", fieldType.Name, err)
+					return fmt.Errorf("read field %s failed: %v", fullFieldName, err)
 				}
 				continue
 			}
@@ -89,7 +115,7 @@ func (d *StreamDecoder) decodeStruct(val reflect.Value, fieldMap map[string]refl
 
 		// 普通字段，根据类型读取
 		if err := d.readField(field, 0, false); err != nil {
-			return fmt.Errorf("read field %s failed: %v", fieldType.Name, err)
+			return fmt.Errorf("read field %s failed: %v", fullFieldName, err)
 		}
 	}
 
@@ -198,7 +224,7 @@ func NewBufferDecoder(data []byte, order binary.ByteOrder) *BufferDecoder {
 }
 
 // Decode 从缓冲区解码数据到结构体
-func (b *BufferDecoder) Decode(v any) error {
+func (b *BufferDecoder) Decode(v interface{}) error {
 	val := reflect.ValueOf(v)
 	if val.Kind() != reflect.Ptr || val.IsNil() {
 		return fmt.Errorf("decoder: v must be a non-nil pointer")
@@ -213,11 +239,11 @@ func (b *BufferDecoder) Decode(v any) error {
 	fieldMap := make(map[string]reflect.Value)
 	b.offset = 0
 
-	return b.decodeStruct(val, fieldMap)
+	return b.decodeStruct(val, fieldMap, "")
 }
 
-// decodeStruct 递归解码结构体
-func (b *BufferDecoder) decodeStruct(val reflect.Value, fieldMap map[string]reflect.Value) error {
+// decodeStruct 递归解码结构体（支持内嵌结构体）
+func (b *BufferDecoder) decodeStruct(val reflect.Value, fieldMap map[string]reflect.Value, prefix string) error {
 	typ := val.Type()
 
 	for i := 0; i < val.NumField(); i++ {
@@ -229,26 +255,52 @@ func (b *BufferDecoder) decodeStruct(val reflect.Value, fieldMap map[string]refl
 			return fmt.Errorf("buffer underflow at field %s", fieldType.Name)
 		}
 
-		// 存入字段映射
-		fieldMap[fieldType.Name] = field
+		// 检查是否是内嵌结构体（匿名嵌入）
+		if fieldType.Anonymous {
+			// 递归解码内嵌结构体
+			if err := b.decodeStruct(field, fieldMap, prefix+fieldType.Name+"."); err != nil {
+				return fmt.Errorf("decode embedded struct %s failed: %v", fieldType.Name, err)
+			}
+			continue
+		}
+
+		// 获取完整的字段名（带前缀）
+		fullFieldName := prefix + fieldType.Name
+		fieldMap[fullFieldName] = field
 
 		// 处理标签
 		tag := fieldType.Tag.Get("custproto")
 		if tag != "" {
 			tagInfo, err := parseTag(tag)
 			if err != nil {
-				return fmt.Errorf("parse tag failed for field %s: %v", fieldType.Name, err)
+				return fmt.Errorf("parse tag failed for field %s: %v", fullFieldName, err)
 			}
 
 			// 如果指定了字段名，表示可变长度字段
 			if tagInfo.FieldName != "" {
-				// 获取长度
-				lengthField, ok := fieldMap[tagInfo.FieldName]
-				if !ok {
-					return fmt.Errorf("field %s references unknown field %s",
-						fieldType.Name, tagInfo.FieldName)
+				// 在fieldMap中查找引用的字段
+				var lengthField reflect.Value
+				var found bool
+
+				// 先尝试直接查找
+				lengthField, found = fieldMap[tagInfo.FieldName]
+				if !found {
+					// 如果没找到，尝试查找任何以该字段名结尾的字段（处理内嵌结构体中的字段）
+					for key, val := range fieldMap {
+						if strings.HasSuffix(key, tagInfo.FieldName) {
+							lengthField = val
+							found = true
+							break
+						}
+					}
 				}
 
+				if !found {
+					return fmt.Errorf("field %s references unknown field %s",
+						fullFieldName, tagInfo.FieldName)
+				}
+
+				// 获取长度
 				var length uint64
 				switch lengthField.Kind() {
 				case reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
@@ -262,7 +314,7 @@ func (b *BufferDecoder) decodeStruct(val reflect.Value, fieldMap map[string]refl
 
 				// 读取变长数据
 				if err := b.readField(field, int(length), tagInfo.Required); err != nil {
-					return fmt.Errorf("read field %s failed: %v", fieldType.Name, err)
+					return fmt.Errorf("read field %s failed: %v", fullFieldName, err)
 				}
 				continue
 			}
@@ -270,7 +322,7 @@ func (b *BufferDecoder) decodeStruct(val reflect.Value, fieldMap map[string]refl
 
 		// 普通字段
 		if err := b.readField(field, 0, false); err != nil {
-			return fmt.Errorf("read field %s failed: %v", fieldType.Name, err)
+			return fmt.Errorf("read field %s failed: %v", fullFieldName, err)
 		}
 	}
 
