@@ -28,7 +28,11 @@ func (e *Encoder) Encode(v any) error {
 	e.buffer = bytes.NewBuffer(nil)
 
 	val := reflect.ValueOf(v)
-	if val.Kind() == reflect.Ptr {
+	// 循环解包，直到不是指针也不是接口
+	for val.Kind() == reflect.Ptr || val.Kind() == reflect.Interface {
+		if val.IsNil() {
+			return fmt.Errorf("encoder: nil pointer or interface")
+		}
 		val = val.Elem()
 	}
 
